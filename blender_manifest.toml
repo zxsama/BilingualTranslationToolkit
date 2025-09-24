@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 # Example of manifest file for a Blender extension
 # Change the values according to your extension
 id = "bilingual_translation_toolkit"
-version = "0.6.0"
+version = "0.6.1"
 name = "Bilingual Translation Toolkit"
 tagline = "Bilingual Translation Interface, Quick Restart"
 maintainer = "MIZI <zxsamazero@163.com>"

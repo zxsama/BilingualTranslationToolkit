@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Bilingual Translation Toolkit",
     "author": "MIZI",
-    "version": (0, 6, 0),
+    "version": (0, 6, 1),
     "blender": (3, 3, 0),
     "location": "Right Topbar",
     "description": "Bilingual Translation Interface, Language Switching, Quick Restart",
