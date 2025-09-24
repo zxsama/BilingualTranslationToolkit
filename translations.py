@@ -55,5 +55,7 @@ translations = {
         ("*", "True: Whitelist, False: Blacklist"): "True:白名单, False:黑名单",
         ("*", "See '%s' in the text editor"): "参见文本编辑器中的 '%s'",
         ("*", "Restart Blender"): "重启Blender",
+        ("*", "Override the original language"): "覆盖原始语言",
+        ("*", "Exchange the compiled files with the specified language files, which can resolve UI language display issues for some plugins."): "将编译文件与指定语言文件交换, 这可以解决一些插件的UI语言显示问题",
     },
 }

@@ -23,25 +23,35 @@ class BilingualTranslatorData:
         user_res_path = bpy.utils.resource_path("USER")
 
         # 首选用户配置路径
-        bl_locale = os.path.join(bl_res_path, "datafiles", "locale")
-        user_locale = os.path.join(user_res_path, "datafiles", "locale")
-        self.res_locale = bl_locale
-        self.locale = user_locale
+        self.local_locale = os.path.join(bl_res_path, "datafiles", "locale")
+        self.user_locale = os.path.join(user_res_path, "datafiles", "locale")
 
-    def get_locale_floder(self):
-        return self.locale
+    def get_user_locale_floder(self):
+        return self.user_locale
+
+    def get_local_locale_floder(self):
+        return self.local_locale
 
     def get_cfg_append_data(self):
         return f"{self.lang_idx}:{self.menu_name}:{self.locale_name}"
 
     def get_cfg_file(self):
-        return os.path.join(self.locale, "languages")
+        return os.path.join(self.user_locale, "languages")
 
     def get_bilingual_mo_path(self):
-        new_mo_floder = os.path.join(self.locale, self.locale_name)
+        new_mo_floder = os.path.join(self.user_locale, self.locale_name)
         new_mo_lcm = os.path.join(new_mo_floder, "LC_MESSAGES")
         new_mo_file = os.path.join(new_mo_lcm, "blender.mo")
         return new_mo_lcm, new_mo_file
+
+    def get_used_language_code(self):
+        bili_mo_floder, _ = self.get_bilingual_mo_path()
+        code_path = os.path.join(bili_mo_floder, "language_code")
+        language_code = ""
+        if os.path.exists(code_path):
+            with open(code_path, "r") as f:
+                language_code = f.read()
+        return code_path, language_code
 
     def get_whitelist_path(self):
         addon_path = os.path.dirname(__file__)
@@ -92,7 +102,7 @@ class MZ_OT_RegisterBilingualTranslator(bpy.types.Operator):
 
     def execute(self, context):
         BTD = BilingualTranslatorData()
-        shutil.copytree(BTD.res_locale, BTD.locale, dirs_exist_ok=True)
+        shutil.copytree(BTD.local_locale, BTD.user_locale, dirs_exist_ok=True)
         cfg_file = BTD.get_cfg_file()
         cfg_append_data = BTD.get_cfg_append_data()
         mo_floder, _ = BTD.get_bilingual_mo_path()
@@ -120,6 +130,20 @@ class MZ_OT_GenerateBilingualTranslator(bpy.types.Operator):
     bl_label = "Generate Bilingual Translation"
     bl_description = trs.pgettext_tip("Generate Bilingual Translation")
     bl_options = {"REGISTER"}
+
+    swap_mo_file: bpy.props.BoolProperty(
+        name="swap_mo_file",
+        default=False,
+        description="Exchange the compiled files with the specified language files, which can resolve UI language display issues for some plugins.",
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(
+            self,
+            "swap_mo_file",
+            text="Override the original language",
+        )
 
     def merge_txt(self, txt, append_txt, swap):
         """生成双语翻译"""
@@ -266,19 +290,26 @@ class MZ_OT_GenerateBilingualTranslator(bpy.types.Operator):
         return set_result
 
     def invoke(self, context, event):
-        context.preferences.view.language = "en_US"
-        return self.execute(context)
+        return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
+        context.preferences.view.language = "en_US"
+
         BTD = BilingualTranslatorData()
         _, bili_mo_file = BTD.get_bilingual_mo_path()
-        locale_folder = BTD.get_locale_floder()
+        language_code_file, _ = BTD.get_used_language_code()
+        user_locale_folder = BTD.get_user_locale_floder()
+        local_locale_folder = BTD.get_local_locale_floder()
         whitelist_file = BTD.get_whitelist_path()
         blacklist_file = BTD.get_blacklist_path()
         preferences = context.preferences
         addon_prefs = preferences.addons[__package__].preferences 
         bilingual_lang_idx = int(addon_prefs.bilingual_lang)
         language_code = setting_lng.LANGUAGES[bilingual_lang_idx][2]
+
+        # 写入当前用于编译的语言代码
+        with open(language_code_file, "w") as f:
+            f.write(str(language_code))
 
         # 重新注册插件翻译, 匹配双语语言, 暂时只有中文
         addon_prefs.bilingual_lang_code_current = language_code
@@ -302,15 +333,16 @@ class MZ_OT_GenerateBilingualTranslator(bpy.types.Operator):
         translation_section_blacklist = addon_prefs.translation_section_blacklist
 
         # 获取mo数据
-        ori_lang_folder = os.path.join(locale_folder, language_code)
+        ori_lang_folder = os.path.join(user_locale_folder, language_code)
         if not os.path.exists(ori_lang_folder):
             language_code = language_code.split("_")[0]
-            ori_lang_folder = os.path.join(locale_folder, language_code)
+            ori_lang_folder = os.path.join(user_locale_folder, language_code)
             if not os.path.exists(ori_lang_folder):
                 self.report({"WARNING"}, "The corresponding language pack does not exist!")
                 return {"FINISHED"}
-        ori_lang_mo = os.path.join(ori_lang_folder, "LC_MESSAGES", "blender.mo")
-        translation_data = polib.mofile(ori_lang_mo, wrapwidth=180)
+        ori_lang_local_mo = os.path.join(local_locale_folder, language_code, "LC_MESSAGES", "blender.mo")
+        ori_lang_user_mo = os.path.join(ori_lang_folder, "LC_MESSAGES", "blender.mo")
+        translation_data = polib.mofile(ori_lang_local_mo, wrapwidth=180)
 
         # 按选定区域翻译
         section_data = set()
@@ -404,6 +436,20 @@ class MZ_OT_GenerateBilingualTranslator(bpy.types.Operator):
         ):
             addon_prefs.switch_lang_slot2 = "1"  # 语言切换中的双语索引
         context.preferences.view.use_translate_new_dataname = False
+
+        # 补丁: 交换编译文件与原语言的mo文件, 解决一些插件中使用了Blender的翻译, 但是双语翻译的语言代码不对应显示不出来的问题
+        if self.swap_mo_file:
+            shutil.copy(bili_mo_file, ori_lang_user_mo)
+            shutil.copy(ori_lang_local_mo, bili_mo_file)
+            # 设置中切换到对应语言
+            context.preferences.view.language = language_code
+            code_idx = next((item[0] for item in setting_lng.LANGUAGES if item[2] == language_code), None)
+            code_idx = str(code_idx + 2)  # 偏移2以匹配偏好设置中的索引
+            if not (
+                addon_prefs.switch_lang_slot2 == code_idx
+                or addon_prefs.switch_lang_slot3 == code_idx
+            ):
+                addon_prefs.switch_lang_slot2 = code_idx
         self.report({"INFO"}, "Bilingual Translation Generated")
         return {"FINISHED"}
 
@@ -442,7 +488,13 @@ class MZ_OT_DeleteBilingualTranslator(bpy.types.Operator):
 
         pyf_remove = bil_remove.__file__
         if self.clear_user_config:
-            mo_floder = BTD.locale # 用户翻译文件的主目录
+            mo_floder = BTD.user_locale # 用户翻译文件的主目录
+        else:
+            # 编译时可能会覆盖原有的语言文件, 这里还原
+            _, language_code = BTD.get_used_language_code()
+            ori_lang_local_mo = os.path.join(BTD.get_local_locale_floder(), language_code, "LC_MESSAGES", "blender.mo")
+            ori_lang_user_mo = os.path.join(BTD.get_user_locale_floder(), language_code, "LC_MESSAGES", "blender.mo")
+            shutil.copy(ori_lang_local_mo, ori_lang_user_mo)
         parameter = [
             pyf_remove,
             "-file",
