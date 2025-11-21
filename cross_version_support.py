@@ -42,6 +42,14 @@ class VersionPlatformManager:
                 command.extend(parameter)
             subprocess.Popen(command)
 
+    def get_language_setting(self):
+
+        if self.bl_version < (5, 0, 0):
+            import bl_i18n_utils.settings as setting_lng
+        else:
+            import _bl_i18n_utils.settings as setting_lng
+        return setting_lng
+
 
 # def language_zh_code():
 #     if bl_version < (4,0,0):

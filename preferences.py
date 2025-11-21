@@ -6,8 +6,8 @@ from .bilingual_translator import (BilingualTranslatorData,
                                    MZ_OT_OpenBilingualBlackWhiteList,
                                    MZ_OT_DeleteBilingualTranslator,
                                     )
-import bl_i18n_utils.settings as setting_lng
 import bpy.app.translations as trs
+from .translations import setting_lng
 
 bar_button_sum = 5
 class MZ_Preferences(bpy.types.AddonPreferences):

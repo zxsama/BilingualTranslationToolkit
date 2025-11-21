@@ -1,4 +1,5 @@
-import bl_i18n_utils.settings as setting_lng
+from .cross_version_support import VersionPlatformManager
+setting_lng = VersionPlatformManager().get_language_setting()
 
 translations = {
     # zh_CN
