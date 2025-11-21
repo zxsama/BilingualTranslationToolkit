@@ -4,7 +4,6 @@ import sys
 import time
 import bpy
 import os
-import bl_i18n_utils.settings as setting_lng
 import bpy.app.translations as trs
 from tempfile import TemporaryDirectory
 from .lib import polib
@@ -13,6 +12,7 @@ from .lib.bilingual_tools import register as bil_reg
 from .lib.bilingual_tools import remove as bil_remove
 from .lib.bilingual_tools import complie as bil_complie
 from .cross_version_support import VersionPlatformManager as VP_Manager
+from .translations import setting_lng
 
 class BilingualTranslatorData:
     def __init__(self):

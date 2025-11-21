@@ -3,10 +3,10 @@ import tempfile
 import bpy
 import os
 import ctypes
-import bl_i18n_utils.settings as setting_lng
 import bpy.app.translations as trs
 from ctypes import wintypes
 from .functions import launch_blender
+from .translations import setting_lng
 
 
 class UI_OT_Switch_Language(bpy.types.Operator):

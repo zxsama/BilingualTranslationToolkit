@@ -56,8 +56,7 @@ def register():
     # translate
     preferences = bpy.context.preferences
     addon_prefs = preferences.addons[__package__].preferences
-    from .translations import translations
-    import bl_i18n_utils.settings as setting_lng
+    from .translations import translations, setting_lng
     # 匹配双语语言, 暂时只有中文
     if addon_prefs.bilingual_lang_code_current == setting_lng.LANGUAGES[13][2]:
         translations["bilingual"] = translations[setting_lng.LANGUAGES[13][2]]
