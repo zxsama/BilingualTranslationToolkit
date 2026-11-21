@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Bilingual Translation Toolkit",
     "author": "MIZI",
-    "version": (0, 6, 1),
+    "version": (0, 6, 6),
     "blender": (3, 3, 0),
     "location": "Right Topbar",
     "description": "Bilingual Translation Interface, Language Switching, Quick Restart",
@@ -56,11 +56,8 @@ def register():
     # translate
     preferences = bpy.context.preferences
     addon_prefs = preferences.addons[__package__].preferences
-    from .translations import translations, setting_lng
-    # 匹配双语语言, 暂时只有中文
-    if addon_prefs.bilingual_lang_code_current == setting_lng.LANGUAGES[13][2]:
-        translations["bilingual"] = translations[setting_lng.LANGUAGES[13][2]]
-    bpy.app.translations.register(__name__, translations)
+    from .translations import register_ui_translations
+    register_ui_translations(addon_prefs.bilingual_lang_code_current)
 
 
 def unregister():

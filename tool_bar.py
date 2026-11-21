@@ -6,7 +6,7 @@ import ctypes
 import bpy.app.translations as trs
 from ctypes import wintypes
 from .functions import launch_blender
-from .translations import setting_lng
+from .translations import LANGUAGE_CODES
 
 
 class UI_OT_Switch_Language(bpy.types.Operator):
@@ -25,9 +25,10 @@ class UI_OT_Switch_Language(bpy.types.Operator):
         addon_prefs = preferences.addons[__package__].preferences
         language_items = addon_prefs.get_lang_items_callback(context)
 
-        code1 = setting_lng.LANGUAGES[int(addon_prefs.switch_lang_slot1)][2]
-        code2 = language_items[int(addon_prefs.switch_lang_slot2)][2]
-        code3 = language_items[int(addon_prefs.switch_lang_slot3)][2]
+        slots = {item[0]: item[2] for item in language_items}
+        code1 = LANGUAGE_CODES.get(addon_prefs.switch_lang_slot1, "en_US")
+        code2 = slots.get(addon_prefs.switch_lang_slot2, "")
+        code3 = slots.get(addon_prefs.switch_lang_slot3, "")
         language_codes = [code1, code2, code3]
         language_codes = list(dict.fromkeys(language_codes))
         current_lan = context.preferences.view.language
@@ -93,7 +94,11 @@ class UI_OT_RestartSavedBlender(bpy.types.Operator):
         bpy.ops.wm.save_as_mainfile(filepath=save_path, check_existing=False, copy=True)
 
         # launch and quit
-        launch_blender(file_path=save_path, is_admin=self.run_admin)
+        try:
+            launch_blender(file_path=save_path, is_admin=self.run_admin)
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not restart Blender: {error}")
+            return {"CANCELLED"}
         self.report({"INFO"}, "Restart Blender")
         bpy.ops.wm.quit_blender()
 
@@ -118,7 +123,11 @@ class UI_OT_RestartBlender(bpy.types.Operator):
 
     def execute(self, context):
         # launch and quit
-        launch_blender(is_admin=self.run_admin)
+        try:
+            launch_blender(is_admin=self.run_admin)
+        except OSError as error:
+            self.report({"ERROR"}, f"Could not restart Blender: {error}")
+            return {"CANCELLED"}
         self.report({"INFO"}, "Restart Blender")
         bpy.ops.wm.quit_blender()
 

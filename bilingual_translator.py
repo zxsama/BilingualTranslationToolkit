@@ -1,30 +1,66 @@
 import re
 import shutil
-import sys
-import time
 import bpy
 import os
 import bpy.app.translations as trs
-from tempfile import TemporaryDirectory
+from pathlib import Path
 from .lib import polib
-from .functions import wait_for_new_file
-from .lib.bilingual_tools import register as bil_reg
-from .lib.bilingual_tools import remove as bil_remove
-from .lib.bilingual_tools import complie as bil_complie
-from .cross_version_support import VersionPlatformManager as VP_Manager
-from .translations import setting_lng
+from .translations import CHINESE_ID, LANGUAGE_CODES, SYSTEM_LOCALE, register_ui_translations
+from .locale_registry import atomic_write, read_languages, refresh_locale_aliases, register_locale, remove_locale
+from .locale_override import apply_override, restore_override
+from .translation_areas import collect_area_keys, key, read_terms, scoped_keys
+from .builtin_menu_keys import collect_menu_items, optional_node_menu_translations
+from .node_menu_assets import collect_node_asset_keys
+
+# Blender 5.3 removed CHECK_PRINTF_FORMAT from its private i18n settings.
+# Keep the legacy matches so the appended translation cannot add arguments.
+_LEGACY_PRINTF_FORMAT = (
+    r"(?!<%)(?:%%)*%"
+    r"[-+#0]?"
+    r"(?:\*|[0-9]+)?"
+    r"(?:\.(?:\*|[0-9]+))?"
+    r"(?:[hljztL]|hh|ll)?"
+    r"[tldiuoxXfFeEgGaAcspn]"
+)
+_APPENDED_FORMAT = re.compile(
+    _LEGACY_PRINTF_FORMAT
+    + r"|\{[^{}]*\}"
+)
 
 class BilingualTranslatorData:
     def __init__(self):
         self.lang_idx = 99
         self.menu_name = "Bilingual (双语显示)"
         self.locale_name = "bilingual"
-        bl_res_path = bpy.utils.resource_path("LOCAL")
-        user_res_path = bpy.utils.resource_path("USER")
+        self.local_locale = SYSTEM_LOCALE
+        self.user_locale = bpy.utils.user_resource("DATAFILES", path="locale")
 
-        # 首选用户配置路径
-        self.local_locale = os.path.join(bl_res_path, "datafiles", "locale")
-        self.user_locale = os.path.join(user_res_path, "datafiles", "locale")
+    def initialize(self):
+        source = Path(self.local_locale)
+        destination = Path(self.user_locale)
+        if not self.local_locale or not (source / "languages").is_file():
+            raise OSError("The corresponding language pack does not exist!")
+        if not self.user_locale or source.resolve() == destination.resolve():
+            raise OSError("The user locale directory must be separate from Blender's shipped locale.")
+        for file in source.rglob("*"):
+            if file.is_file():
+                target = destination / file.relative_to(source)
+                if not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(file, target)
+        self.refresh_aliases()
+        register_locale(self.get_cfg_file(), self.get_cfg_append_data())
+        Path(self.get_bilingual_mo_path()[0]).mkdir(parents=True, exist_ok=True)
+
+    def source_catalog(self, code):
+        if not self.local_locale:
+            raise OSError("The corresponding language pack does not exist!")
+        root = Path(self.local_locale)
+        for directory in dict.fromkeys((code, code.split("_")[0])):
+            catalog = root / directory / "LC_MESSAGES" / "blender.mo"
+            if catalog.is_file():
+                return directory, catalog
+        raise OSError("The corresponding language pack does not exist!")
 
     def get_user_locale_floder(self):
         return self.user_locale
@@ -61,23 +97,36 @@ class BilingualTranslatorData:
         addon_path = os.path.dirname(__file__)
         return os.path.join(addon_path, "resource", "bilingual_translator", "blacklist")
 
-    def admin_required(self):
-        cfg_file = self.get_cfg_file()
-        required = False
-        try:
-            f = open(cfg_file, "a+", encoding="utf-8")
-        except PermissionError:
-            required = True
-        else:
-            f.close()
-        return required
+    def refresh_aliases(self):
+        if self.local_locale and self.user_locale:
+            refresh_locale_aliases(self.get_cfg_file(), Path(self.local_locale) / "languages")
+
+    def ensure_stock_catalog(self, locale_folder, source_catalog):
+        destination = Path(self.user_locale) / locale_folder / "LC_MESSAGES" / "blender.mo"
+        if not destination.is_file():
+            atomic_write(destination, "wb", lambda file: file.write(source_catalog.read_bytes()))
 
     def get_bilingual_init_state(self):
-        bil_mo_folder, _ = self.get_bilingual_mo_path()
-        if os.path.exists(bil_mo_folder):
-            return True
-        else:
+        if not self.user_locale:
             return False
+        config = Path(self.get_cfg_file())
+        return config.is_file() and any(row[2] == self.locale_name for row in read_languages(config))
+
+    def remove_generated_locale(self):
+        if not self.user_locale or not self.local_locale or Path(self.user_locale).resolve() == Path(self.local_locale).resolve():
+            raise ValueError("The user locale directory must be separate from Blender's shipped locale.")
+        folder = Path(self.get_bilingual_mo_path()[0])
+        if not folder.resolve().is_relative_to(Path(self.user_locale).resolve()):
+            raise ValueError("Toolkit locale is outside the user locale directory")
+        restore_override(self.user_locale, folder)
+        remove_locale(self.get_cfg_file(), self.locale_name)
+        for name in ("blender.mo", "language_code"):
+            path = folder / name
+            if path.is_file():
+                path.unlink()
+        for path in (folder, folder.parent):
+            if path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
 
     def get_bilingual_compile_state(self):
         _, bil_mo_file = self.get_bilingual_mo_path()
@@ -101,27 +150,14 @@ class MZ_OT_RegisterBilingualTranslator(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
-        BTD = BilingualTranslatorData()
-        shutil.copytree(BTD.local_locale, BTD.user_locale, dirs_exist_ok=True)
-        cfg_file = BTD.get_cfg_file()
-        cfg_append_data = BTD.get_cfg_append_data()
-        mo_floder, _ = BTD.get_bilingual_mo_path()
-
-        pyf_register = bil_reg.__file__
-        parameter = [
-            pyf_register,
-            "-file",
-            cfg_file,
-            "-data",
-            f"\n{cfg_append_data}",
-            "-mo_floder",
-            mo_floder,
-        ]
-        VPM = VP_Manager()
-        VPM.run_command(BTD.admin_required(), parameter)
-
+        try:
+            BilingualTranslatorData().initialize()
+        except OSError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
         self.report({"INFO"}, "Bilingual Translation Registered")
-        bpy.ops.mz.restart_saved_blender()
+        if not bpy.app.background:
+            bpy.ops.mz.restart_saved_blender()
         return {"FINISHED"}
 
 
@@ -133,7 +169,7 @@ class MZ_OT_GenerateBilingualTranslator(bpy.types.Operator):
 
     swap_mo_file: bpy.props.BoolProperty(
         name="swap_mo_file",
-        default=False,
+        default=True,
         description="Exchange the compiled files with the specified language files, which can resolve UI language display issues for some plugins.",
     )
 
@@ -152,304 +188,134 @@ class MZ_OT_GenerateBilingualTranslator(bpy.types.Operator):
 
         if swap:
             txt, append_txt = append_txt, txt
-        custom_delimiter = self.custom_delimiter
-        check_print_format = setting_lng.CHECK_PRINTF_FORMAT
-        check_bracket_format = r"\{[^{}]*\}"
-        replace_str = r"[＊]"
-
-        check_format = rf"{check_print_format}|{check_bracket_format}"
-        format = re.compile(check_format).findall
-
-        if format(append_txt):
-            append_txt = re.sub(check_format, replace_str, append_txt)
-
-        return f"{txt}{custom_delimiter}{append_txt}"
-
-    def get_nodes_property(self, identifiers):
-        """
-        获取所有节点的属性名称, API限制所以先实例化再获取
-        https://blender.stackexchange.com/questions/254305/how-to-know-the-input-output-sockets-of-a-node-without-importing-it-into-the
-        """
-
-        def get_self_property(node):
-            default_props = (
-                "dimensions",
-                "draw_buttons",
-                "draw_buttons_ext",
-                "input_template",
-                "inputs",
-                "internal_links",
-                "isAnimationNode",
-                "is_registered_node_type",
-                "output_template",
-                "outputs",
-                "poll",
-                "poll_instance",
-                "rna_type",
-                "socket_value_update",
-                "type",
-                "update",
-                "viewLocation",
-                "texture_mapping",
-                "color_mapping",
-                "filepath",
-                "cache_point_density",
-                "calc_point_density",
-                "calc_point_density_minmax",
-                "interface",
-                "height",
-                "show_options",
-                "show_preview",
-                "show_texture",
-                "width_hidden",
-                "color",
-                "hide",
-                "label",
-                "location",
-                "mute",
-                "name",
-                "parent",
-                "select",
-                "use_custom_color",
-                "width",
-            )
-            self_proper = []
-            for prop_name in dir(node):
-                if prop_name.startswith("_") or prop_name.startswith("bl_"):
-                    continue
-                if prop_name in default_props:
-                    continue
-                # 从属性名称生成可能的UI名称组合, 临时方案
-                words = prop_name.split("_")
-                capitalized_words = [
-                    word.capitalize().replace("Uv", "UV") for word in words
-                ]
-                self_proper.extend([" ".join(capitalized_words)] + capitalized_words)
-            return self_proper
-
-        property_set = set()
-        tmp_name = "nodes_temporary"
-        node_types = [
-            "CompositorNodeTree",
-            "TextureNodeTree",
-            "GeometryNodeTree",
-            "ShaderNodeTree",
-        ]
-        data = bpy.data
-        ng = data.node_groups
-
-        for nd_type in node_types:
-            tmp_ng = ng.get(tmp_name)
-            if not tmp_ng:
-                tmp_ng = ng.new(tmp_name, type=nd_type)
-            node = tmp_ng.nodes
-            for name in identifiers:
-                node.clear()
-                try:
-                    n = node.new(name)
-                    socket_name = lambda s: s.label if s.label else s.name
-                    inputs = [socket_name(i) for i in n.inputs]
-                    outputs = [socket_name(o) for o in n.outputs]
-                    selfs = get_self_property(n)
-                    property_set.update(inputs)
-                    property_set.update(outputs)
-                    property_set.update(selfs)
-                except Exception as e:
-                    ...
-            ng.remove(tmp_ng)
-
-        return property_set
-
-    def get_bl_rna_name(self, target: str = "Node"):
-        """
-        https://blender.stackexchange.com/questions/79784/how-to-get-all-types-of-nodes-dynamically
-        """
-        set_result = set()
-        for li in bpy.types.__dir__():
-            type = getattr(bpy.types, li)
-            if hasattr(type, "bl_rna"):
-                base = type.bl_rna.base
-                while base:
-                    if base.identifier == target:
-                        set_result.add(type.bl_rna.name)
-                        break
-                    base = base.bl_rna.base
-        return set_result
-
-    def get_bl_rna_identifier(self, target: str = "Node"):
-        set_result = set()
-        for li in bpy.types.__dir__():
-            type = getattr(bpy.types, li)
-            if hasattr(type, "bl_rna"):
-                base = type.bl_rna.base
-                while base:
-                    if base.identifier == target:
-                        set_result.add(type.bl_rna.identifier)
-                        break
-                    base = base.bl_rna.base
-        return set_result
+        append_txt = _APPENDED_FORMAT.sub("[＊]", append_txt)
+        return f"{txt}{self.custom_delimiter}{append_txt}"
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
-        context.preferences.view.language = "en_US"
+        view = context.preferences.view
+        original_language = view.language
+        try:
+            return self.generate(context)
+        except (OSError, TypeError, ValueError) as error:
+            view.language = original_language
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
 
+    def generate(self, context):
         BTD = BilingualTranslatorData()
         _, bili_mo_file = BTD.get_bilingual_mo_path()
         language_code_file, _ = BTD.get_used_language_code()
-        user_locale_folder = BTD.get_user_locale_floder()
-        local_locale_folder = BTD.get_local_locale_floder()
+        addon_prefs = context.preferences.addons[__package__].preferences
+        language_code = LANGUAGE_CODES.get(addon_prefs.bilingual_lang, "en_US")
+        locale_folder, source_mo = BTD.source_catalog(language_code)
+        if not BTD.get_bilingual_init_state():
+            raise ValueError("Initialize bilingual translation and restart Blender before generating it.")
+        BTD.ensure_stock_catalog(locale_folder, source_mo)
+        BTD.refresh_aliases()
+        if self.swap_mo_file and language_code not in bpy.app.translations.locales:
+            raise ValueError("Restart Blender to load the updated language list, then retry Override Original Language.")
+        translation_data = polib.mofile(str(source_mo), wrapwidth=180)
+        context.preferences.view.language = "en_US"
         whitelist_file = BTD.get_whitelist_path()
         blacklist_file = BTD.get_blacklist_path()
-        preferences = context.preferences
-        addon_prefs = preferences.addons[__package__].preferences 
-        bilingual_lang_idx = int(addon_prefs.bilingual_lang)
-        language_code = setting_lng.LANGUAGES[bilingual_lang_idx][2]
-
-        # 写入当前用于编译的语言代码
-        with open(language_code_file, "w") as f:
-            f.write(str(language_code))
-
-        # 重新注册插件翻译, 匹配双语语言, 暂时只有中文
-        addon_prefs.bilingual_lang_code_current = language_code
-        from .translations import translations
-        if language_code == setting_lng.LANGUAGES[13][2]:
-            translations["bilingual"] = translations[setting_lng.LANGUAGES[13][2]]
-        else:
-            translations["bilingual"] = {}
-        bpy.app.translations.unregister(__name__)
-        bpy.app.translations.register(__name__, translations)
 
         self.custom_delimiter = addon_prefs.custom_delimiter
         is_translation_preceding = int(addon_prefs.is_translation_preceding[0])
         translation_section_all = addon_prefs.translation_section_all
-        translation_section_node = addon_prefs.translation_section_node
-        translation_section_node_property = (
-            addon_prefs.translation_section_node_property
-        )
-        translation_section_modifier = addon_prefs.translation_section_modifier
+        selected_areas = {
+            area for area, enabled in (
+                ("topbar", addon_prefs.translation_section_topbar),
+                ("nodes", addon_prefs.translation_section_node),
+                ("node_properties", addon_prefs.translation_section_node_property),
+                ("properties", addon_prefs.translation_section_properties),
+                ("modifiers", addon_prefs.translation_section_modifier),
+            ) if enabled
+        }
         translation_section_whitelist = addon_prefs.translation_section_whitelist
         translation_section_blacklist = addon_prefs.translation_section_blacklist
 
-        # 获取mo数据
-        ori_lang_folder = os.path.join(user_locale_folder, language_code)
-        if not os.path.exists(ori_lang_folder):
-            language_code = language_code.split("_")[0]
-            ori_lang_folder = os.path.join(user_locale_folder, language_code)
-            if not os.path.exists(ori_lang_folder):
-                self.report({"WARNING"}, "The corresponding language pack does not exist!")
-                return {"FINISHED"}
-        ori_lang_local_mo = os.path.join(local_locale_folder, language_code, "LC_MESSAGES", "blender.mo")
-        ori_lang_user_mo = os.path.join(ori_lang_folder, "LC_MESSAGES", "blender.mo")
-        translation_data = polib.mofile(ori_lang_local_mo, wrapwidth=180)
-
-        # 按选定区域翻译
-        section_data = set()
-        # Node
-        if not translation_section_all and translation_section_node:
-            nodes_name = self.get_bl_rna_name(target="Node")
-            section_data.update(nodes_name)
-
-            # Node_Property
-        if not translation_section_all and translation_section_node_property:
-            modif_identifier = self.get_bl_rna_identifier(target="Node")
-            nodes_property = self.get_nodes_property(modif_identifier)
-            section_data.update(nodes_property)
-
-            # Modifier
-        if not translation_section_all and translation_section_modifier:
-            modif_identifier = self.get_bl_rna_identifier(target="Modifier")
-            # 无法直接获取显示的UI名称, 字符串处理一下
-            format_modifier_name = (
-                lambda name: " ".join(
-                    re.findall(r"[A-Z][a-z]*", name.replace("Modifier", ""))
+        # Blender resolves a translation by context and source text globally.
+        available = {key(entry.msgctxt, entry.msgid) for entry in translation_data}
+        optional_node_labels = {}
+        if translation_section_all or "nodes" in selected_areas:
+            optional_node_labels = optional_node_menu_translations(bpy.types, language_code)
+            for (label_context, label), translated in optional_node_labels.items():
+                if (label_context, label) not in available:
+                    translation_data.append(polib.POEntry(
+                        msgid=label, msgstr=translated,
+                        msgctxt=None if label_context == "*" else label_context,
+                    ))
+                    available.add((label_context, label))
+        if translation_section_all:
+            selected_keys = available
+        else:
+            whitelist = read_terms(whitelist_file) if translation_section_whitelist else ((), ())
+            sections = collect_area_keys(bpy.types, bpy.app.version) if selected_areas else {}
+            if selected_areas & {"topbar", "nodes", "properties", "modifiers"}:
+                # Only Blender's shipped UI files, never scripts from the .blend.
+                import bl_ui
+                root = Path(bl_ui.__file__).parent
+                for section, item in collect_menu_items(root, bpy.types, bpy.ops, trs.contexts):
+                    if section.startswith("node_menu_"):
+                        if "nodes" in selected_areas:
+                            sections[section].add(item)
+                            sections["nodes"].add(item)
+                    elif section.startswith("modifier_menu_"):
+                        if selected_areas & {"modifiers", "properties"}:
+                            sections[section].add(item)
+                            sections["modifiers"].add(item)
+                    elif section in selected_areas or section == "modifiers" and "properties" in selected_areas:
+                        sections[section].add(item)
+                if selected_areas & {"modifiers", "properties"}:
+                    sections["modifier_menu_deeper"].update(
+                        sections["modifier_asset_keys"] - sections["modifier_menu_root"],
+                    )
+            if "nodes" in selected_areas:
+                sections["nodes"].update(optional_node_labels)
+                if ("*", "Template") in optional_node_labels:
+                    sections["node_menu_root"].add(("*", "Template"))
+                root_assets, deeper_assets = collect_node_asset_keys(
+                    bpy.utils.system_resource("DATAFILES"), bpy.data.libraries, with_levels=True,
                 )
-                .replace("To", "to")
-                .replace("U V", "UV")
-            )
-            formatted_modif_name = list(map(format_modifier_name, modif_identifier))
-            section_data.update(formatted_modif_name)
-            modif_name = self.get_bl_rna_name(target="Modifier")
-            section_data.update(modif_name)
-
-            # 白名单
-        whitelist = []
-        if not translation_section_all and translation_section_whitelist:
-            with open(whitelist_file, "r", encoding="utf-8") as f:
-                whitelist = [line.strip() for line in f.readlines()]
-            section_data.update(whitelist)
-
-            # 黑名单
-        blacklist = []
-        if translation_section_blacklist:
-            with open(blacklist_file, "r", encoding="utf-8") as f:
-                blacklist = [line.strip() for line in f.readlines()]
-            section_data.difference_update(blacklist)
-
-        # 合并翻译
+                sections["node_menu_root"].update(root_assets)
+                sections["node_menu_deeper"].update(deeper_assets)
+                sections["nodes"].update(root_assets | deeper_assets)
+            selected_keys = scoped_keys(available, sections, selected_areas, whitelist)
+        # The same stock phrase labels the panel button and the popup title.
+        selected_keys = selected_keys - {("*", "Add Modifier"), ("Operator", "Add Modifier")}
+        blocked_text, blocked_keys = (
+            read_terms(blacklist_file) if translation_section_blacklist else ((), ())
+        )
         for entry in translation_data:
-            if (translation_section_all or entry.msgid in section_data) and (
-                not entry.msgid in blacklist
-            ):
+            entry_key = key(entry.msgctxt, entry.msgid)
+            if entry_key in selected_keys and entry_key not in blocked_keys and entry.msgid not in blocked_text:
                 entry.msgstr = self.merge_txt(
                     entry.msgstr, entry.msgid, is_translation_preceding
                 )
 
-        # 保存为po文件
-        if sys.platform == "win32":
-            with TemporaryDirectory() as tmp_po_dir:
-                tmp_po_file = os.path.join(tmp_po_dir, "blender.po")
-                translation_data.save_as_pofile(tmp_po_file)
-
-                # 使用msgfmt.exe转换po文件, 比直接polib save更快
-                addon_dir = os.path.dirname(__file__)
-                gettext_tools = os.path.join(addon_dir, "lib", "gettext_tools")
-                msgfmt = os.path.join(gettext_tools, "msgfmt.exe")
-
-                # 可能需要管理员权限
-                timestamp = time.time()
-                pyf_compile = bil_complie.__file__
-                parameter = [
-                    pyf_compile,
-                    "-po",
-                    tmp_po_file,
-                    "-mo",
-                    bili_mo_file,
-                    "-msgfmt",
-                    msgfmt,
-                ]
-                VPM = VP_Manager()
-                VPM.run_command(BTD.admin_required(), parameter)
-
-                wait_for_new_file(bili_mo_file, timestamp, timeout=2)
-        else:# fallback
-            translation_data.save(bili_mo_file)
-
-        # 显示双语
-        context.preferences.view.language = BTD.locale_name
-        preferences = context.preferences
-        addon_prefs = preferences.addons[__package__].preferences
-        if not (
-            addon_prefs.switch_lang_slot2 == "1"
-            or addon_prefs.switch_lang_slot3 == "1"
-        ):
-            addon_prefs.switch_lang_slot2 = "1"  # 语言切换中的双语索引
-        context.preferences.view.use_translate_new_dataname = False
-
-        # 补丁: 交换编译文件与原语言的mo文件, 解决一些插件中使用了Blender的翻译, 但是双语翻译的语言代码不对应显示不出来的问题
+        # Write the binary catalog synchronously on every platform, closing
+        # and publishing it before selecting the locale. No external msgfmt
+        # process can race Windows or outlive its temporary source directory.
+        catalog = translation_data.to_binary()
+        state_dir = Path(bili_mo_file).parent
         if self.swap_mo_file:
-            shutil.copy(bili_mo_file, ori_lang_user_mo)
-            shutil.copy(ori_lang_local_mo, bili_mo_file)
-            # 设置中切换到对应语言
-            context.preferences.view.language = language_code
-            code_idx = next((item[0] for item in setting_lng.LANGUAGES if item[2] == language_code), None)
-            code_idx = str(code_idx + 2)  # 偏移2以匹配偏好设置中的索引
-            if not (
-                addon_prefs.switch_lang_slot2 == code_idx
-                or addon_prefs.switch_lang_slot3 == code_idx
-            ):
-                addon_prefs.switch_lang_slot2 = code_idx
+            apply_override(BTD.user_locale, state_dir, locale_folder, catalog)
+            catalog = source_mo.read_bytes()
+        else:
+            restore_override(BTD.user_locale, state_dir)
+        atomic_write(bili_mo_file, "wb", lambda handle: handle.write(catalog))
+        atomic_write(language_code_file, "w", lambda handle: handle.write(language_code))
+        addon_prefs.bilingual_lang_code_current = language_code
+        register_ui_translations(language_code)
+        context.preferences.view.language = language_code if self.swap_mo_file else BTD.locale_name
+        code_idx = next((int(index) + 2 for index, code in LANGUAGE_CODES.items() if code == language_code), None)
+        slot = str(code_idx) if self.swap_mo_file and code_idx is not None else "1"
+        if slot not in (addon_prefs.switch_lang_slot2, addon_prefs.switch_lang_slot3):
+            addon_prefs.switch_lang_slot2 = slot
+        context.preferences.view.use_translate_new_dataname = False
         self.report({"INFO"}, "Bilingual Translation Generated")
         return {"FINISHED"}
 
@@ -461,9 +327,9 @@ class MZ_OT_DeleteBilingualTranslator(bpy.types.Operator):
     bl_options = {"REGISTER"}
 
     clear_user_config: bpy.props.BoolProperty(
-        name="clear_user_config",
+        name="Reset Toolkit translation settings",
         default=False,
-        description="",
+        description="Reset language, separator, order, areas, and switch slots. Keep list files and other add-ons' translations.",
     )
 
     def draw(self, context):
@@ -472,51 +338,45 @@ class MZ_OT_DeleteBilingualTranslator(bpy.types.Operator):
         layout.prop(
             self,
             "clear_user_config",
-            text="Delete user translation settings (may affect other translation addon)",
+            text="Reset Toolkit translation settings",
         )
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
-        BTD = BilingualTranslatorData()
-        cfg_file = BTD.get_cfg_file()
-        cfg_append_data = BTD.get_cfg_append_data()
-        mo_floder, _ = BTD.get_bilingual_mo_path()
-
-        context.preferences.view.language = "en_US"
-
-        pyf_remove = bil_remove.__file__
+        view = context.preferences.view
+        original_language = view.language
+        if original_language == "bilingual":
+            view.language = "en_US"
+        try:
+            BilingualTranslatorData().remove_generated_locale()
+        except (OSError, ValueError, KeyError) as error:
+            if original_language == "bilingual":
+                view.language = original_language
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        addon_prefs = context.preferences.addons[__package__].preferences
+        addon_prefs.bilingual_lang_code_current = ""
+        register_ui_translations("")
         if self.clear_user_config:
-            mo_floder = BTD.user_locale # 用户翻译文件的主目录
+            for name in (
+                "bilingual_lang", "custom_delimiter", "is_translation_preceding",
+                "translation_section_all", "translation_section_topbar",
+                "translation_section_node", "translation_section_node_property",
+                "translation_section_properties", "translation_section_modifier",
+                "translation_section_whitelist", "translation_section_blacklist",
+                "switch_lang_slot1", "switch_lang_slot2", "switch_lang_slot3",
+            ):
+                addon_prefs.property_unset(name)
         else:
-            # 编译时可能会覆盖原有的语言文件, 这里还原
-            _, language_code = BTD.get_used_language_code()
-            ori_lang_local_mo = os.path.join(BTD.get_local_locale_floder(), language_code, "LC_MESSAGES", "blender.mo")
-            ori_lang_user_mo = os.path.join(BTD.get_user_locale_floder(), language_code, "LC_MESSAGES", "blender.mo")
-            shutil.copy(ori_lang_local_mo, ori_lang_user_mo)
-        parameter = [
-            pyf_remove,
-            "-file",
-            cfg_file,
-            "-data",
-            f"\n{cfg_append_data}",
-            "-mo_floder", 
-            mo_floder,
-        ]
-        VPM = VP_Manager()
-        VPM.run_command(BTD.admin_required(), parameter)
-
-        # 恢复语言切换, "0:空, 1:双语索引, 15:简中索引"
-        preferences = context.preferences
-        addon_prefs = preferences.addons[__package__].preferences
-        if addon_prefs.switch_lang_slot2 == "1":
-            addon_prefs.switch_lang_slot2 = "15"
-        if addon_prefs.switch_lang_slot3 == "1":
-            addon_prefs.switch_lang_slot3 = "0"
-
+            if addon_prefs.switch_lang_slot2 == "1":
+                addon_prefs.switch_lang_slot2 = str(CHINESE_ID + 2)
+            if addon_prefs.switch_lang_slot3 == "1":
+                addon_prefs.switch_lang_slot3 = "0"
         self.report({"INFO"}, "Bilingual Translation Deleted")
-        bpy.ops.mz.restart_saved_blender()
+        if not bpy.app.background:
+            bpy.ops.mz.restart_saved_blender()
         return {"FINISHED"}
 
 

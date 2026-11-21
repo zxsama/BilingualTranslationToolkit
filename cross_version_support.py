@@ -1,14 +1,9 @@
 import sys
-import bpy
 import subprocess
 import ctypes
 
 
 class VersionPlatformManager:
-    def __init__(self):
-        self.platform = sys.platform
-        self.bl_version = bpy.app.version
-
     def run_command(
         self,
         needs_admin,
@@ -41,19 +36,3 @@ class VersionPlatformManager:
             if parameter:
                 command.extend(parameter)
             subprocess.Popen(command)
-
-    def get_language_setting(self):
-
-        if self.bl_version < (5, 0, 0):
-            import bl_i18n_utils.settings as setting_lng
-        else:
-            import _bl_i18n_utils.settings as setting_lng
-        return setting_lng
-
-
-# def language_zh_code():
-#     if bl_version < (4,0,0):
-#         zh_code = "zh_CN"
-#     else:
-#         zh_code = "zh_HANS"
-#     return zh_code

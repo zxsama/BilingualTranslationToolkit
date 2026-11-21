@@ -1,9 +1,29 @@
-from .cross_version_support import VersionPlatformManager
-setting_lng = VersionPlatformManager().get_language_setting()
+from pathlib import Path
+import bpy
+from .locale_registry import read_languages
+
+SYSTEM_LOCALE = bpy.utils.system_resource("DATAFILES", path="locale") or ""
+try:
+    LANGUAGES = read_languages(Path(SYSTEM_LOCALE) / "languages") if SYSTEM_LOCALE else ()
+except OSError:
+    LANGUAGES = ()
+if not LANGUAGES:
+    # Keep the other toolbar functions available in builds without language data.
+    LANGUAGES = ((0, "Automatic", "DEFAULT"), (1, "English", "en_US"))
+LANGUAGE_CODES = {str(number): code for number, _, code in LANGUAGES}
+CHINESE_LOCALE = next((code for code in ("zh_HANS", "zh_CN") if code in LANGUAGE_CODES.values()), "zh_HANS")
+CHINESE_ID = next((number for number, _, code in LANGUAGES if code == CHINESE_LOCALE), 1)
+
+def register_ui_translations(language_code):
+    labels = dict(translations)
+    if language_code == CHINESE_LOCALE:
+        labels["bilingual"] = translations[CHINESE_LOCALE]
+    bpy.app.translations.unregister(__package__)
+    bpy.app.translations.register(__package__, labels)
 
 translations = {
     # zh_CN
-    setting_lng.LANGUAGES[13][2]: {
+    CHINESE_LOCALE: {
         ("*", "Show/Hide Shortcut Keys"): "快捷按键显示/关闭",
         ("*", "Language Switch Option"): "语言切换项",
         ("*", "Bilingual Translation"): "双语翻译",
@@ -11,6 +31,11 @@ translations = {
         ("*", "Separator"): "间隔符",
         ("*", "Merge Method"): "合并方式",
         ("*", "Translation Area"): "翻译区域",
+        ("BilingualTranslationToolkit", "ALL"): "所有",
+        ("*", "Topbar Menus"): "顶栏菜单",
+        ("*", "Properties Editor"): "属性编辑器",
+        ("*", "Include Blender's topbar menus and statically identifiable built-in items"): "包括 Blender 顶栏菜单名称和可识别的内置菜单项",
+        ("*", "Include Properties panel titles and modifier names"): "包括属性编辑器面板标题及修改器名称",
         ("*", "Node"): "节点",
         ("*", "Node Property"): "节点属性",
         ("*", "Modifier"): "修改器",
@@ -45,7 +70,8 @@ translations = {
         ("*", "Open Addon Path"): "打开插件路径",
         ("*", "Register Bilingual Translation (Auto Restart)"): "注册双语翻译(自动重启)",
         ("*", "Blender Will Restart"): "将会重启blender",
-        ("*", "Delete user translation settings (may affect other translation addon)"): "删除用户翻译配置(可能影响其他翻译插件)",
+        ("*", "Reset Toolkit translation settings"): "重置本插件的翻译设置",
+        ("*", "Reset language, separator, order, areas, and switch slots. Keep list files and other add-ons' translations."): "还原语言、分隔符、顺序、翻译区域和语言切换槽位。保留黑白名单文件及其他插件的翻译。",
         ("*", "Bilingual Translation Registered"): "双语翻译已注册",
         ("*", "Generate Bilingual Translation"): "生成双语翻译",
         ("*", "The corresponding language pack does not exist!"): "不存在对应语言包!",

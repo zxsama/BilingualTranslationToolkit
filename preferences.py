@@ -7,7 +7,7 @@ from .bilingual_translator import (BilingualTranslatorData,
                                    MZ_OT_DeleteBilingualTranslator,
                                     )
 import bpy.app.translations as trs
-from .translations import setting_lng
+from .translations import CHINESE_ID, LANGUAGES
 
 bar_button_sum = 5
 class MZ_Preferences(bpy.types.AddonPreferences):
@@ -25,9 +25,9 @@ class MZ_Preferences(bpy.types.AddonPreferences):
     
     # 双语翻译
     bilingual_lang: bpy.props.EnumProperty(
-        items=[(str(i[0]), i[1], i[2]) for i in setting_lng.LANGUAGES],
+        items=[(str(i), label, code, i) for i, label, code in LANGUAGES],
         name="Bilingual Language",
-        default=13,
+        default=CHINESE_ID,
     )
 
     custom_delimiter: bpy.props.StringProperty(
@@ -52,6 +52,18 @@ class MZ_Preferences(bpy.types.AddonPreferences):
         description="Translation area - All",
     )
 
+    translation_section_topbar: bpy.props.BoolProperty(
+        name="Topbar Menus",
+        default=False,
+        description="Include Blender's topbar menus and statically identifiable built-in items",
+    )
+
+    translation_section_properties: bpy.props.BoolProperty(
+        name="Properties Editor",
+        default=False,
+        description="Include Properties panel titles and modifier names",
+    )
+
     translation_section_node: bpy.props.BoolProperty(
         name="translation_section_node",
         default=True,
@@ -72,7 +84,7 @@ class MZ_Preferences(bpy.types.AddonPreferences):
 
     translation_section_whitelist: bpy.props.BoolProperty(
         name="translation_section_whitelist",
-        default=True,
+        default=False,
         description="Translation area - Whitelist",
     )
 
@@ -91,20 +103,20 @@ class MZ_Preferences(bpy.types.AddonPreferences):
     # 语言切换
     def get_lang_items_callback(self, context):
         # ["0:无", "1:双语", LANGUAGES]
-        languages = list(setting_lng.LANGUAGES)
+        languages = LANGUAGES
         BTD = BilingualTranslatorData()
-        languages = [(str(i[0] + 2), i[1], i[2]) for i in languages]
+        languages = [(str(i + 2), label, code, i + 2) for i, label, code in languages]
         if BTD.get_bilingual_compile_state():
-            bilingual = ("1", BTD.menu_name, BTD.locale_name)
+            bilingual = ("1", BTD.menu_name, BTD.locale_name, 1)
         else:
-            bilingual = ("1", "[PlaceHolder]", languages[1][2])
+            bilingual = ("1", "[PlaceHolder]", "en_US", 1)
         languages.insert(0, bilingual)
-        default = ("0", "None", "")
+        default = ("0", "None", "", 0)
         languages.insert(0, default)
         return languages
 
     switch_lang_slot1: bpy.props.EnumProperty(
-        items=[(str(i[0]), i[1], i[2]) for i in setting_lng.LANGUAGES],
+        items=[(str(i), label, code, i) for i, label, code in LANGUAGES],
         name="Language Switch 1",
         default=1,
     )
@@ -112,7 +124,7 @@ class MZ_Preferences(bpy.types.AddonPreferences):
     switch_lang_slot2: bpy.props.EnumProperty(
         items=get_lang_items_callback,
         name="Language Switch 2",
-        default=15,  # 13 offset 2
+        default=CHINESE_ID + 2,
     )
 
     switch_lang_slot3: bpy.props.EnumProperty(
@@ -158,12 +170,17 @@ class MZ_Preferences(bpy.types.AddonPreferences):
             sub_flow_row = sub_flow.row()
             sub_flow_row.prop(self, "is_translation_preceding", text="Merge Method", expand=True)
             
-            sub_flow_row = sub_flow.row()
-            sub_fr_row = sub_flow_row.row(heading="Translation Area", align=True)
-            sub_fr_row.prop(self, "translation_section_all", text="ALL", toggle=True)
-            sub_fr_row.prop(self, "translation_section_node", text="Node", toggle=True)
-            sub_fr_row.prop(self, "translation_section_node_property", text="Node Property", toggle=True)
-            sub_fr_row.prop(self, "translation_section_modifier", text="Modifier", toggle=True)
+            area_row = sub_flow.row().row(heading="Translation Area", align=True)
+            area_row.prop(
+                self, "translation_section_all", text="ALL",
+                text_ctxt="BilingualTranslationToolkit", toggle=True,
+            )
+            area_row.prop(self, "translation_section_node", text="Node", toggle=True)
+            area_row.prop(self, "translation_section_node_property", text="Node Property", toggle=True)
+            area_row.prop(self, "translation_section_modifier", text="Modifier", toggle=True)
+            area_row = sub_flow.row().row(heading="", align=True)
+            area_row.prop(self, "translation_section_topbar", text="Topbar Menus", toggle=True)
+            area_row.prop(self, "translation_section_properties", text="Properties Editor", toggle=True)
             
             sub_flow_row = sub_flow.row()
             sub_fr_row = sub_flow_row.row(heading="", align=True)

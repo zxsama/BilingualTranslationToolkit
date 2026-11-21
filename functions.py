@@ -1,5 +1,7 @@
 import os
-import time
+from pathlib import Path
+import shutil
+import sys
 import bpy
 import subprocess
 from bpy.types import bpy_prop_collection
@@ -20,6 +22,41 @@ def collection_search(ID):
     )
 
 
+def _windows_steam_executable(blender_path):
+    import winreg
+
+    key_name = r"Software\Valve\Steam"
+    for hive, name, view in (
+        (winreg.HKEY_CURRENT_USER, "SteamExe", 0),
+        (winreg.HKEY_LOCAL_MACHINE, "InstallPath", winreg.KEY_WOW64_32KEY),
+        (winreg.HKEY_LOCAL_MACHINE, "InstallPath", winreg.KEY_WOW64_64KEY),
+    ):
+        try:
+            with winreg.OpenKey(hive, key_name, 0, winreg.KEY_READ | view) as key:
+                value, _ = winreg.QueryValueEx(key, name)
+        except OSError:
+            continue
+        if isinstance(value, str) and value:
+            path = Path(os.path.expandvars(value))
+            if name == "InstallPath":
+                path /= "steam.exe"
+            if path.is_absolute() and path.is_file():
+                return str(path)
+
+    # A secondary Steam library may not contain steam.exe; the registry above
+    # resolves the client independently of where Blender is installed.
+    for directory in Path(blender_path).parents:
+        if directory.name.lower() == "steamapps":
+            candidate = directory.parent / "steam.exe"
+            if candidate.is_file():
+                return str(candidate)
+            break
+    candidate = shutil.which("steam.exe")
+    if candidate:
+        return os.path.abspath(candidate)
+    raise FileNotFoundError("Steam executable not found. Restart Blender from Steam.")
+
+
 def launch_blender(
     file_path: str = "", steam_app_id: str = "365670", is_admin: bool = False
 ):
@@ -31,9 +68,10 @@ def launch_blender(
     blender_exe = bpy.app.binary_path
 
     # launch
-    if "steamapps" in blender_exe:
+    if any(part.lower() == "steamapps" for part in Path(blender_exe).parts):
         # steam安装
-        command = ["steam", "-applaunch", steam_app_id]
+        steam = _windows_steam_executable(blender_exe) if sys.platform == "win32" else "steam"
+        command = [steam, "-applaunch", steam_app_id]
         if file_path:
             command.append(file_path)
         subprocess.Popen(command)
@@ -42,17 +80,3 @@ def launch_blender(
         parameter = [file_path] if file_path else []
         VPM = VP_Manager()
         VPM.run_command(is_admin, parameter, program_path=blender_exe)
-
-
-def wait_for_new_file(file_path, timestamp, timeout=None):
-    """
-    等待新文件出现在指定路径
-    """
-    start_time = time.time()
-    while True:
-        if os.path.exists(file_path) and os.path.getctime(file_path) > timestamp:
-            return True
-        elif timeout is not None and (time.time() - start_time) > timeout:
-            return False
-        else:
-            time.sleep(0.1)
